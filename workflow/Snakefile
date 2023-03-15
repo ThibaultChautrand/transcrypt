@@ -1,0 +1,26 @@
+rule bwa_map:
+    input:
+        fasta="{sample}_contigs.scaffolds.fasta",
+        fastq="{sample}.fastq"
+    output:
+        "mapped_clusters/{sample}.bam"
+    shell:
+        "bwa index {input.fasta};"
+        "bwa mem {input} | samtools view -Sb - > {output}"
+
+rule samtools_sort:
+    input:
+        "mapped_clusters/{sample}.bam"
+    output:
+        "mapped_clusters_sorted/{sample}_sorted.bam"
+    shell:
+        "samtools sort -T mapped_clusters/{wildcards.sample} "
+        "-O bam {input} > {output}"
+
+rule samtools_index:
+    input:
+        "mapped_clusters_sorted/{sample}.bam"
+    output:
+        "mapped_clusters_sorted/{sample}.bam.bai"
+    shell:
+        "samtools index {input}"
