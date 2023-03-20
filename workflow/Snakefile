@@ -1,26 +1,49 @@
+# Use: 
+# mamba activate transcrypt-snakemake
+# snakemake -c x data/mapped_clusters/sorted/<samplename>_sorted_<AS | MIBiG>.bam.bai
+
+
+# Convert ALL clusters.gbk from Antismash analysis to fasta for mapping
+rule AS_samples_prep:
+    output:
+        "data/antismash/as_clusters.fasta"
+    shell:
+        """for file in data/antismash/*/*.gbk; do sequence_name=$(sed -n '/^DEFINITION/p' $file | tr -s ' ' | cut -d ' ' -f2); sequence_to_replace=$(sed -n '/^LOCUS/p' $file | tr -s ' ' | cut -d ' ' -f2); sed "s/$sequence_to_replace/$(basename $file .gbk)/" $file > $file.conv; done;"""
+        """cat data/antismash/*/c*region*.gbk.conv | seqconverter -I genbank -O fasta > {output}"""
+
+# Convert ALL clusters.gbk from MIBiG database for mapping
+rule MIBiG_samples_prep:
+	output:
+		"data/MIBiG/MIBiG_clusters.fasta"
+	shell:
+		"""cat data/MIBiG/*.gbk | seqconverter -I genbank -O fasta > {output}"""
+
+# Map the transcritome on the chosen clusters
 rule bwa_map:
     input:
-        fasta="{sample}_contigs.scaffolds.fasta",
-        fastq="{sample}.fastq"
+        fasta="data/antismash/as_clusters.fasta",
+        fastq="data/metatranscriptomes/{sample}.fastq.gz"
     output:
-        "mapped_clusters/{sample}.bam"
+        "data/mapped_clusters/{sample}_{database}.bam"
     shell:
         "bwa index {input.fasta};"
         "bwa mem {input} | samtools view -Sb - > {output}"
 
+# Sort the bam file
 rule samtools_sort:
     input:
-        "mapped_clusters/{sample}.bam"
+        "data/mapped_clusters/{sample}_{database}.bam"
     output:
-        "mapped_clusters_sorted/{sample}_sorted.bam"
+        "data/mapped_clusters/sorted/{sample}_sorted_{database}.bam"
     shell:
-        "samtools sort -T mapped_clusters/{wildcards.sample} "
+        "samtools sort -T data/mapped_clusters/{wildcards.sample} "
         "-O bam {input} > {output}"
 
-rule samtools_index:
+# Index the bam file
+rule MIBiG_samtools_index:
     input:
-        "mapped_clusters_sorted/{sample}.bam"
+        "data/mapped_clusters/sorted/{sample}_sorted_{database}.bam"
     output:
-        "mapped_clusters_sorted/{sample}.bam.bai"
+        "data/mapped_clusters/sorted/{sample}_sorted_{database}.bam.bai"
     shell:
         "samtools index {input}"
