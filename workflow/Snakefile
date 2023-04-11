@@ -2,13 +2,13 @@
 # mamba activate transcrypt-snakemake
 # snakemake -c x data/mapped_clusters/sorted/<samplename>_sorted_<AS | MIBiG>.bam.bai
 
-
 # Convert ALL clusters.gbk from Antismash analysis to fasta for mapping
 rule AS_samples_prep:
     output:
-        "data/antismash/as_clusters.fasta"
+        "data/antismash/AS_clusters.fasta"
     shell:
-        """for file in data/antismash/*/*.gbk; do sequence_name=$(sed -n '/^DEFINITION/p' $file | tr -s ' ' | cut -d ' ' -f2); sequence_to_replace=$(sed -n '/^LOCUS/p' $file | tr -s ' ' | cut -d ' ' -f2); sed "s/$sequence_to_replace/$(basename $file .gbk)/" $file > $file.conv; done;"""
+        #Antismash
+        """for file in data/antismash/*/c*region*.gbk; do sequence_name=$(sed -n '/Original ID/p' $file | tr -s ' ' | cut -d ' ' -f5)___; sequence_to_replace=$(sed -n '/^LOCUS/p' $file | tr -s ' ' | cut -d ' ' -f2); sed "s/$sequence_to_replace/$sequence_name$(basename $file .gbk)/" $file > $file.conv; done;"""
         """cat data/antismash/*/c*region*.gbk.conv | seqconverter -I genbank -O fasta > {output}"""
 
 # Convert ALL clusters.gbk from MIBiG database for mapping
@@ -19,31 +19,42 @@ rule MIBiG_samples_prep:
 		"""cat data/MIBiG/*.gbk | seqconverter -I genbank -O fasta > {output}"""
 
 # Map the transcritome on the chosen clusters
+
+rule bwa_index:
+    input:
+        "data/{database}/{database}_clusters.fasta"
+    output:
+        "data/{database}/{database}_clusters.fasta.amb"
+    shell:
+        "bwa index {input}"
+
 rule bwa_map:
     input:
-        fasta="data/antismash/as_clusters.fasta",
-        fastq="data/metatranscriptomes/{sample}.fastq.gz"
+        fasta="data/{database}/{database}_clusters.fasta",
+        fastq1="data/metatranscriptomes/{sample}/{sample}.1.fq.gz",
+        fastq2="data/metatranscriptomes/{sample}/{sample}.2.fq.gz",
+        index="data/{database}/{database}_clusters.fasta.amb"
     output:
         "data/mapped_clusters/{sample}_{database}.bam"
+    threads : 4
     shell:
-        "bwa index {input.fasta};"
-        "bwa mem {input} | samtools view -Sb - > {output}"
+        "bwa mem -t 8 {input.fasta} {input.fastq1} {input.fastq2} | samtools view -Sb - > {output}"
 
-# Sort the bam file
+# Sort and index the bam file
 rule samtools_sort:
     input:
         "data/mapped_clusters/{sample}_{database}.bam"
     output:
         "data/mapped_clusters/sorted/{sample}_sorted_{database}.bam"
     shell:
-        "samtools sort -T data/mapped_clusters/{wildcards.sample} "
-        "-O bam {input} > {output}"
+        "samtools sort -T data/mapped_clusters/{wildcards.sample} -O bam {input} > {output};"
+        "samtools index {output}"
 
-# Index the bam file
-rule MIBiG_samtools_index:
-    input:
+# Count the number of reads per cluster.
+rule Extract_clusters:
+    input :
         "data/mapped_clusters/sorted/{sample}_sorted_{database}.bam"
-    output:
-        "data/mapped_clusters/sorted/{sample}_sorted_{database}.bam.bai"
+    output :
+        "data/mapped_clusters/counts/{sample}_{database}.tsv"
     shell:
-        "samtools index {input}"
+        "samtools idxstats {input} > {output}"
