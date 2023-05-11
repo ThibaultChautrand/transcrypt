@@ -1,0 +1,1 @@
+qsub -W group_list=dtu_00009 -A dtu_00009 -l nodes=1:thinnode:ppn=40,mem=80gb,walltime=50400 transcrypt.sh
