@@ -1,0 +1,102 @@
+# Use: 
+# mamba activate snakemake-transcrypt
+# snakemake -c x data/mapped_clusters/sorted/<samplename>_sorted_<AS | MIBiG>.bam.bai
+
+
+# Extract BGCs from MAGs via AntiSMASH
+
+#################################
+#      BGC IDENTIFICATION       #
+#################################
+
+rule Run_AS:
+    input:
+        "{metagenome_folder}/*"
+    output:
+        "data/AS/*/c*region*.gbk"
+    shell:
+        "for file in metagenomes/*; do antismash $file --genefinding-tool prodigal-m; done"
+
+# Concatenate all BGC sequences from every sample into one fasta file
+rule Samples_prep:
+    input:
+        "data/{database}/*"
+    output:
+        "{database}/{database}_clusters.fasta"
+    shell:
+        "python as_gbk_to_1fasta_updated.py -i {database} -o {database}_clusters.fasta"
+
+#################################
+#        BGC CLUSTERING         #
+#################################
+
+# Align every BGC sequence through BLAST
+rule make_blastdb:
+    input:
+        "{database}/{database}_clusters.fasta"
+    output:
+        "{blast_dir}"
+    shell:
+        """makeblastdb -in "${fasta_dir}/${fasta_file}" -parse_seqids -max_file_sz '4GB' -blastdb_version 5 -title "Database" -dbtype nucl -out "${blast_dir}""""
+
+rule blastn:
+    input:
+        "{database}/{database}_clusters.fasta"
+    output:
+        "{blast_file}/pairwise_table_symmetric.tsv"
+    shell:
+        """blastn -query "${fasta_dir}/${fasta_file}" -db "${blast_dir}" -task dc-megablast -outfmt "6 qaccver saccver qstart qend sstart send pident length qcovs qcovhsp mismatch evalue bitscore" -subject_besthit >> "${blast_dir}/${blast_file}"""
+        """sed -i '1i qaccver\tsaccver\tqstart\tqend\tsstart\tsend\tpident\tlength\tqcovs\tqcovhsp\tmismatch\tevalue\tbitscore' "${blast_dir}/${blast_file}"""
+        """python3 symmetrise_blastn.py --blast "${blast_dir}/${blast_file}" --fasta "${fasta_dir}/${fasta_file}""""
+
+
+# Cluster BGC sequences with >97% similarity together
+rule mcl:
+    input:
+        "{blast_file}/pairwise_table_symmetric.tsv"
+    output:
+        "{mcl_file}/blast_result.mci"
+    shell:
+        # convert blast to abc format (seq1, seq2, score(hereEvalue)) http://micans.org/mcl/man/clmprotocols.html#blast
+        # Also skipping the header line
+        """cut -f "1,2,12" "${blast_dir}/${blast_file}" | tail -n +2  > "${mcl_dir}/blast_result.abc"""
+        #load using mcxload to create networkfile (.mci) and dictionary file (.tab)
+        """mcxload -abc "${mcl_dir}/blast_result.abc" --stream-mirror --stream-neg-log10 -stream-tf 'ceil(200)' -o "${mcl_dir}/blast_result.mci" -write-tab "${mcl_dir}/blast_result.tab"""
+        # Run the clustering
+        """mcl "${mcl_dir}/blast_result.mci" -I 1.4  -use-tab "${mcl_dir}/blast_result.tab" -odir "${mcl_dir}""""
+        """mcl "${mcl_dir}/blast_result.mci" -I 2  -use-tab "${mcl_dir}/blast_result.tab" -odir "${mcl_dir}""""
+        """mcl "${mcl_dir}/blast_result.mci" -I 4  -use-tab "${mcl_dir}/blast_result.tab" -odir "${mcl_dir}""""
+        """mcl "${mcl_dir}/blast_result.mci" -I 6  -use-tab "${mcl_dir}/blast_result.tab" -odir "${mcl_dir}""""
+        # collect-to-jsons.
+        """python3 mcl_conv_json.py --mcl-files ${mcl_dir}/*mci.I*"""
+
+# Extract one representative sequence from each cluster of BGC
+rule get_representatives:
+    input:
+        "{baseline}/"
+    output:
+        "{rep_file}/cluster_repre.fa"
+    shell:
+        "python3 get_cluster_representatives.py --family-json ${mcl_dir}/*mci.I40.json --similarity-matrix ${blast_dir}/pairwise_table_symmetric.tsv  --antismash-fasta-file ${fasta_dir}/${fasta_file} --outfile "${representative_dir}/cluster_repre.fa""
+
+#################################
+#          BGC COUNTING         #
+#################################
+
+# Build an index of every representative sequences
+rule kallisto_index:
+    input:
+        "{database}/{database}_clusters.fasta"
+    output:
+        "{kallisto_file}/{database}_index.idx"
+    shell:
+        "kallisto index -i {output} {input}"
+
+# Pseudomap every metatranscriptome on the index and provides the count tables for each representative sequence.
+rule kallisto_quant:
+    input:
+        "{kallisto_file}/{database}_index.idx"
+    output:
+        "{kallisto_file}/"
+    shell:
+        "for folder in {metatranscriptomes_file}/*; do kallisto quant -i {input}_index.idx -o kallisto_out_rep/{database}_$(basename $folder) $folder/*.fq.gz; done"
